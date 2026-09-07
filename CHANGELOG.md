@@ -3,6 +3,7 @@
 ## 0.1.4
 
 - Add a privacy-safe marketplace preview image using fictional repositories.
+- Update GitHub Actions to Node 24-compatible releases.
 - Complete clean public-repository installation verification.
 
 ## 0.1.3
