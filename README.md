@@ -18,6 +18,12 @@ The plugin can be summoned with:
 omarchy-shell shell summon io.github.u64a.project-launcher '{}'
 ```
 
+Remove it with:
+
+```bash
+omarchy plugin remove io.github.u64a.project-launcher
+```
+
 For a convenient Omarchy menu entry, add this to `~/.config/omarchy/extensions/omarchy-menu.jsonc`:
 
 ```jsonc
