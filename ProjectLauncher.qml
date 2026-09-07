@@ -61,8 +61,7 @@ Item {
         if (rows.length === 0)
             return;
         var project = rows[Math.max(0, Math.min(root.selectedIndex, rows.length - 1))];
-        launchProc.command = [helper, "--launch", project.path];
-        launchProc.running = true;
+        Quickshell.execDetached([helper, "--launch", project.path]);
         root.dismiss();
     }
 
@@ -92,10 +91,6 @@ Item {
             if (exitCode !== 0 && !root.errorText)
                 root.errorText = "Could not scan the projects folder";
         }
-    }
-
-    Process {
-        id: launchProc
     }
 
     PanelWindow {

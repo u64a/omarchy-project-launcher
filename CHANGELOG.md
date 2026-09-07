@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Launch the selected AI terminal as a detached process before closing the overlay.
+- Prevent the on-demand plugin lifecycle from terminating the launch process.
+
 ## 0.1.2
 
 - Prevent repository-controlled filesystem monitor hooks from executing during project discovery.
