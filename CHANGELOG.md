@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Add a privacy-safe marketplace preview image using fictional repositories.
+- Complete clean public-repository installation verification.
+
 ## 0.1.3
 
 - Launch the selected AI terminal as a detached process before closing the overlay.

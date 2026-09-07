@@ -1,5 +1,7 @@
 # Omarchy Project Launcher
 
+![Project Launcher preview](preview.png)
+
 An open-source Omarchy plugin for browsing Git repositories, viewing live status, and opening a new GitHub Copilot CLI session in the selected project.
 
 It scans direct children of `~/Projects` each time it opens. No project registration or database is required.
