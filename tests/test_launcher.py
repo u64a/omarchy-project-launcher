@@ -14,11 +14,13 @@ from src.omarchy_project_launcher import (
     clone_project,
     create_project,
     discover_repositories,
+    executable_config_keys,
     import_project,
     inspect_repository,
     launch_copilot,
     managed_project_path,
     project_json,
+    run_command,
     trash_project,
 )
 
@@ -195,12 +197,72 @@ class LauncherTests(unittest.TestCase):
             commands: list[list[str]] = []
 
             def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-                commands.append(command)
-                return subprocess.CompletedProcess(command, 0, "", "")
+                if command[0] == "gio":
+                    commands.append(command)
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return run_command(command)
 
             with self.assertRaises(ProjectOperationError):
                 trash_project(root, project, runner=runner)
             self.assertEqual(commands, [])
+
+            trash_project(root, project, allow_dirty=True, runner=runner)
+            self.assertEqual(commands, [["gio", "trash", "--", str(project)]])
+
+    def test_scan_refuses_repository_with_content_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Projects"
+            project = root / "hostile"
+            project.mkdir(parents=True)
+            self.initialize_repository(project)
+            subprocess.run(
+                ["git", "-C", str(project), "config", "filter.pwn.clean", "false"],
+                check=True,
+            )
+
+            self.assertEqual(executable_config_keys(project), ["filter.pwn.clean"])
+
+            inspected = inspect_repository(project)
+            self.assertIsNotNone(inspected.error)
+            self.assertIn("untrusted Git config", inspected.error)
+
+    def test_import_refuses_repository_with_executable_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "Projects"
+            source = base / "hostile"
+            root.mkdir()
+            source.mkdir()
+            self.initialize_repository(source)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "filter.pwn.clean", "false"],
+                check=True,
+            )
+
+            with self.assertRaises(ProjectOperationError):
+                import_project(root, source, "symlink")
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_untrusted_repository_can_still_be_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Projects"
+            project = root / "hostile"
+            project.mkdir(parents=True)
+            self.initialize_repository(project)
+            subprocess.run(
+                ["git", "-C", str(project), "config", "filter.pwn.clean", "false"],
+                check=True,
+            )
+            commands: list[list[str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if command[0] == "gio":
+                    commands.append(command)
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return run_command(command)
+
+            with self.assertRaises(ProjectOperationError):
+                trash_project(root, project, runner=runner)
 
             trash_project(root, project, allow_dirty=True, runner=runner)
             self.assertEqual(commands, [["gio", "trash", "--", str(project)]])

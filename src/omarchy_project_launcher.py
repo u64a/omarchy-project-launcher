@@ -56,6 +56,79 @@ def run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, capture_output=True, text=True)
 
 
+GIT_HARDENING = (
+    "--no-pager",
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+)
+
+# Repository-local configuration keys that make Git execute a command. A
+# repository carries its own config, so these turn an ordinary scan into
+# arbitrary code execution by the repository's author.
+#
+# Content filters are the only vector that survives the hardening flags above:
+# `git status` runs filter.<name>.clean to re-hash stat-dirty files, and there
+# is no flag that disables an in-tree .gitattributes. Keys such as
+# core.fsmonitor, core.hooksPath, and core.pager are already neutralised by
+# GIT_HARDENING, so they are deliberately not treated as untrusted here.
+SCAN_EXECUTABLE_SUFFIXES = (".clean", ".smudge", ".process")
+
+# Import is an explicit, one-time action, so it is vetted more strictly: these
+# keys do not execute during a scan, but would run commands the next time the
+# user works in the repository themselves.
+IMPORT_EXECUTABLE_KEYS = frozenset(
+    {
+        "core.fsmonitor",
+        "core.hookspath",
+        "core.sshcommand",
+        "core.pager",
+        "core.editor",
+        "core.askpass",
+        "credential.helper",
+        "sequence.editor",
+        "gpg.program",
+        "init.templatedir",
+    }
+)
+IMPORT_EXECUTABLE_SUFFIXES = SCAN_EXECUTABLE_SUFFIXES + (".textconv", ".command")
+IMPORT_EXECUTABLE_PREFIXES = ("alias.",)
+
+
+def executable_config_keys(
+    path: Path, runner: CommandRunner = run_command, strict: bool = False
+) -> list[str]:
+    """Return repository-local config keys that would execute a command.
+
+    Reading configuration never runs filters, hooks, or pagers, so this is safe
+    to call before any other Git command touches an untrusted repository. Pass
+    ``strict`` to also reject keys that execute later rather than during a scan.
+    """
+    try:
+        result = runner(
+            ["git", *GIT_HARDENING, "-C", str(path), "config", "--local", "--list", "--name-only"]
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+
+    found = set()
+    for key in result.stdout.splitlines():
+        name = key.strip().lower()
+        if not name:
+            continue
+        if name.endswith(SCAN_EXECUTABLE_SUFFIXES):
+            found.add(name)
+        elif strict and (
+            name in IMPORT_EXECUTABLE_KEYS
+            or name.endswith(IMPORT_EXECUTABLE_SUFFIXES)
+            or name.startswith(IMPORT_EXECUTABLE_PREFIXES)
+        ):
+            found.add(name)
+    return sorted(found)
+
+
 def discover_repositories(root: Path) -> list[Path]:
     if not root.is_dir():
         raise FileNotFoundError(f"Projects folder does not exist: {root}")
@@ -67,16 +140,20 @@ def discover_repositories(root: Path) -> list[Path]:
 
 
 def inspect_repository(path: Path, runner: CommandRunner = run_command) -> Project:
+    unsafe = executable_config_keys(path, runner)
+    if unsafe:
+        return Project(
+            path.name,
+            path,
+            "unknown",
+            error=f"untrusted Git config ({', '.join(unsafe)}); status not run",
+        )
+
     try:
         result = runner(
             [
                 "git",
-                "--no-pager",
-                "--no-optional-locks",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.hooksPath=/dev/null",
+                *GIT_HARDENING,
                 "-C",
                 str(path),
                 "status",
@@ -184,12 +261,25 @@ def create_project(
     return destination
 
 
-def import_project(root: Path, source: Path, method: str = "symlink") -> Path:
+def import_project(
+    root: Path,
+    source: Path,
+    method: str = "symlink",
+    runner: CommandRunner = run_command,
+) -> Path:
     source = source.expanduser().resolve()
     if not source.is_dir() or not (source / ".git").exists():
         raise ProjectOperationError("The selected folder is not a Git repository")
     if source == root or source in root.parents:
         raise ProjectOperationError("The projects folder or its parent cannot be imported")
+
+    unsafe = executable_config_keys(source, runner, strict=True)
+    if unsafe:
+        raise ProjectOperationError(
+            "Refusing to import: this repository's Git config would run commands "
+            f"on your account ({', '.join(unsafe)}). Remove these keys from "
+            f"{source}/.git/config if you trust it."
+        )
 
     destination = destination_for(root, source.name)
     if method == "symlink":
@@ -220,11 +310,14 @@ def trash_project(
     runner: CommandRunner = run_command,
 ) -> None:
     project_path = managed_project_path(root, requested)
-    project = inspect_repository(project_path)
-    if project.error:
-        raise ProjectOperationError(f"Cannot verify project status: {project.error}")
-    if not allow_dirty and (project.changed or project.untracked):
-        raise ProjectOperationError("Project has uncommitted changes; confirm dirty removal")
+    project = inspect_repository(project_path, runner)
+    if not allow_dirty:
+        if project.error:
+            raise ProjectOperationError(
+                f"Cannot verify project status ({project.error}); confirm removal"
+            )
+        if project.changed or project.untracked:
+            raise ProjectOperationError("Project has uncommitted changes; confirm dirty removal")
     runner(["gio", "trash", "--", str(project_path)])
 
 

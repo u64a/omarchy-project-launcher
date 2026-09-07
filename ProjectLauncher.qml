@@ -110,10 +110,14 @@ Item {
         });
     }
 
+    function projectNeedsConfirmation(project) {
+        return project.changed > 0 || project.untracked > 0 || String(project.error || "") !== "";
+    }
+
     function confirmDelete() {
         if (!root.deleteProject)
             return;
-        var dirty = root.deleteProject.changed > 0 || root.deleteProject.untracked > 0;
+        var dirty = root.projectNeedsConfirmation(root.deleteProject);
         if (dirty && root.deleteStep === 1) {
             root.deleteStep = 2;
             return;
@@ -490,7 +494,7 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: root.deleteStep === 2 ? "This repository has uncommitted changes. Move it to Trash anyway?" : "Move ‘" + (root.deleteProject ? root.deleteProject.name : "") + "’ to the desktop Trash?"
+                            text: root.deleteStep === 2 ? (root.deleteProject && String(root.deleteProject.error || "") !== "" ? "This repository's status could not be verified. Move it to Trash anyway?" : "This repository has uncommitted changes. Move it to Trash anyway?") : "Move ‘" + (root.deleteProject ? root.deleteProject.name : "") + "’ to the desktop Trash?"
                             color: root.deleteStep === 2 ? "#ef4444" : Color.menu.text
                             font.family: Style.font.family
                             font.pixelSize: Style.font.body

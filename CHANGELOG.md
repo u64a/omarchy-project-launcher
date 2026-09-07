@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Refuse to run status scans in a repository whose local Git config defines a content filter, closing an arbitrary command execution path triggered by opening the launcher.
+- Reject imports of repositories whose Git config would run commands on the user's account.
+- Require explicit confirmation before trashing a project whose status cannot be verified.
+
 ## 0.2.0
 
 - Add projects by cloning an HTTPS or SSH Git URL.
