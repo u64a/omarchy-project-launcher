@@ -6,6 +6,15 @@ An open-source Omarchy plugin for browsing Git repositories, viewing live status
 
 It scans direct children of `~/Projects` each time it opens. No project registration or database is required.
 
+## Features
+
+- View branch, changed, untracked, and ahead/behind status.
+- Open GitHub Copilot CLI in a selected repository.
+- Clone a project from an HTTPS or SSH Git URL.
+- Create and initialize a new Git project.
+- Import an existing repository by symlink, move, or copy; symlink is the default.
+- Move a project to the desktop Trash, with an additional warning for uncommitted changes.
+
 ## Install
 
 Install from the GitHub repository with Omarchy's plugin manager:
@@ -43,6 +52,8 @@ By default, direct children of `~/Projects` are scanned each time the overlay op
 
 The launcher deliberately does not maintain a project registry or cache: adding or removing a repository is reflected the next time it opens.
 
+Use **+ Add** to clone, create, or import a project. Each project row has a **Trash** action. Trash removal is limited to direct children of the configured projects folder and never uses permanent deletion. Imported symlinks are themselves moved to Trash; their external targets are left untouched.
+
 ## Requirements
 
 - Omarchy Quattro with plugin support
@@ -51,7 +62,7 @@ The launcher deliberately does not maintain a project registry or cache: adding 
 - `xdg-terminal-exec`
 - GitHub Copilot CLI (`copilot`)
 
-The plugin runs unsandboxed with normal user permissions, as all Omarchy plugins do. It reads directory entries and Git metadata and launches the configured terminal; it does not modify repositories or require elevated privileges. Review [SECURITY.md](SECURITY.md) for the security model and reporting process.
+The plugin runs unsandboxed with normal user permissions, as all Omarchy plugins do. It reads Git metadata, can create/clone/import project folders at the user's request, and can move a selected project to the desktop Trash after confirmation. It never requires elevated privileges. Review [SECURITY.md](SECURITY.md) for the security model and reporting process.
 
 ## Marketplace readiness
 

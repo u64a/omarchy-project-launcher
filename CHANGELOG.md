@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Add projects by cloning an HTTPS or SSH Git URL.
+- Create a new folder initialized as a Git repository on `main`.
+- Import an existing Git repository by symlink, move, or copy, with symlink as the default.
+- Move projects to the desktop Trash after confirmation.
+- Require an additional explicit confirmation before trashing a repository with changed or untracked files.
+- Validate all managed destinations and prevent removal outside the configured projects folder.
+- Present import methods as a themed radio list instead of a native dropdown.
+- Make every control keyboard reachable, with Tab focus, Escape to step back, and focus moved to the confirmation action.
+
 ## 0.1.4
 
 - Add a privacy-safe marketplace preview image using fictional repositories.

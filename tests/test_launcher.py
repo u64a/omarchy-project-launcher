@@ -9,15 +9,35 @@ from unittest.mock import patch
 
 from src.omarchy_project_launcher import (
     Project,
-    project_json,
+    ProjectOperationError,
     choose_project,
+    clone_project,
+    create_project,
     discover_repositories,
+    import_project,
     inspect_repository,
     launch_copilot,
+    managed_project_path,
+    project_json,
+    trash_project,
 )
 
 
 class LauncherTests(unittest.TestCase):
+    def initialize_repository(self, path: Path) -> None:
+        subprocess.run(["git", "init", "--quiet", "-b", "main", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
+        subprocess.run(
+            ["git", "-C", str(path), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        (path / "tracked.txt").write_text("tracked\n")
+        subprocess.run(["git", "-C", str(path), "add", "tracked.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(path), "commit", "--quiet", "-m", "initial"],
+            check=True,
+        )
+
     def test_discovers_only_direct_git_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -104,6 +124,86 @@ class LauncherTests(unittest.TestCase):
 
             self.assertIsNone(project.error)
             self.assertFalse(marker.exists())
+
+    def test_clone_uses_safe_destination_and_disables_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commands: list[list[str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            destination = clone_project(root, "https://github.com/acme/example.git", runner)
+
+            self.assertEqual(destination, root / "example")
+            self.assertEqual(commands[0][-2:], ["https://github.com/acme/example.git", str(destination)])
+            self.assertIn("core.hooksPath=/dev/null", commands[0])
+            self.assertIn("--no-recurse-submodules", commands[0])
+
+    def test_create_initializes_main_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = create_project(root, "new-project")
+
+            branch = subprocess.run(
+                ["git", "-C", str(destination), "branch", "--show-current"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(branch, "main")
+
+    def test_import_supports_symlink_copy_and_move(self) -> None:
+        for method in ("symlink", "copy", "move"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = base / "Projects"
+                source = base / f"source-{method}"
+                root.mkdir()
+                source.mkdir()
+                self.initialize_repository(source)
+
+                destination = import_project(root, source, method)
+
+                self.assertTrue((destination / ".git").exists())
+                self.assertEqual(destination.is_symlink(), method == "symlink")
+                if method == "move":
+                    self.assertFalse(source.exists())
+                else:
+                    self.assertTrue(source.exists())
+
+    def test_managed_project_path_rejects_paths_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "Projects"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            self.initialize_repository(outside)
+
+            with self.assertRaises(ProjectOperationError):
+                managed_project_path(root, outside)
+
+    def test_trash_requires_dirty_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Projects"
+            project = root / "dirty"
+            project.mkdir(parents=True)
+            self.initialize_repository(project)
+            (project / "untracked.txt").write_text("dirty\n")
+            commands: list[list[str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaises(ProjectOperationError):
+                trash_project(root, project, runner=runner)
+            self.assertEqual(commands, [])
+
+            trash_project(root, project, allow_dirty=True, runner=runner)
+            self.assertEqual(commands, [["gio", "trash", "--", str(project)]])
 
     def test_menu_selection_maps_back_to_project(self) -> None:
         projects = [Project("alpha", Path("/tmp/alpha"), "main")]

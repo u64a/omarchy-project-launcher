@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ from typing import Callable, Sequence
 
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+class ProjectOperationError(RuntimeError):
+    """Raised when a requested project operation is unsafe or invalid."""
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,126 @@ def inspect_repository(path: Path, runner: CommandRunner = run_command) -> Proje
     return Project(path.name, path, branch, changed, untracked, ahead, behind)
 
 
+def validate_project_name(name: str) -> str:
+    normalized = name.strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or normalized.startswith(".")
+        or "/" in normalized
+        or "\\" in normalized
+        or "\0" in normalized
+    ):
+        raise ProjectOperationError("Project name must be a single visible folder name")
+    return normalized
+
+
+def destination_for(root: Path, name: str) -> Path:
+    destination = root / validate_project_name(name)
+    if destination.exists() or destination.is_symlink():
+        raise ProjectOperationError(f"A project named '{destination.name}' already exists")
+    return destination
+
+
+def clone_name(url: str) -> str:
+    source = url.strip().rstrip("/")
+    if not source:
+        raise ProjectOperationError("Enter a Git repository URL")
+    tail = source.rsplit("/", 1)[-1]
+    if ":" in tail and "://" not in source:
+        tail = tail.rsplit(":", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return validate_project_name(tail)
+
+
+def clone_project(
+    root: Path, url: str, runner: CommandRunner = run_command
+) -> Path:
+    source = url.strip()
+    destination = destination_for(root, clone_name(source))
+    runner(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "clone",
+            "--no-recurse-submodules",
+            "--",
+            source,
+            str(destination),
+        ]
+    )
+    return destination
+
+
+def create_project(
+    root: Path, name: str, runner: CommandRunner = run_command
+) -> Path:
+    destination = destination_for(root, name)
+    destination.mkdir()
+    try:
+        runner(
+            [
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "init",
+                "-b",
+                "main",
+                str(destination),
+            ]
+        )
+    except Exception:
+        destination.rmdir()
+        raise
+    return destination
+
+
+def import_project(root: Path, source: Path, method: str = "symlink") -> Path:
+    source = source.expanduser().resolve()
+    if not source.is_dir() or not (source / ".git").exists():
+        raise ProjectOperationError("The selected folder is not a Git repository")
+    if source == root or source in root.parents:
+        raise ProjectOperationError("The projects folder or its parent cannot be imported")
+
+    destination = destination_for(root, source.name)
+    if method == "symlink":
+        destination.symlink_to(source, target_is_directory=True)
+    elif method == "move":
+        shutil.move(str(source), str(destination))
+    elif method == "copy":
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        raise ProjectOperationError(f"Unsupported import method: {method}")
+    return destination
+
+
+def managed_project_path(root: Path, requested: Path) -> Path:
+    root = root.expanduser().resolve()
+    candidate = Path(os.path.abspath(requested.expanduser()))
+    if candidate.parent.resolve() != root:
+        raise ProjectOperationError("Only direct children of the projects folder can be removed")
+    if not candidate.is_dir() or not (candidate / ".git").exists():
+        raise ProjectOperationError("The selected path is not a managed Git project")
+    return candidate
+
+
+def trash_project(
+    root: Path,
+    requested: Path,
+    allow_dirty: bool = False,
+    runner: CommandRunner = run_command,
+) -> None:
+    project_path = managed_project_path(root, requested)
+    project = inspect_repository(project_path)
+    if project.error:
+        raise ProjectOperationError(f"Cannot verify project status: {project.error}")
+    if not allow_dirty and (project.changed or project.untracked):
+        raise ProjectOperationError("Project has uncommitted changes; confirm dirty removal")
+    runner(["gio", "trash", "--", str(project_path)])
+
+
 def menu_option(project: Project) -> str:
     icon = "󰊢" if not project.error else ""
     return f"{icon}\t{project.name}\t{project.status_text}"
@@ -184,15 +309,65 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="REPOSITORY",
         help="launch Copilot in a repository without opening the menu",
     )
+    parser.add_argument(
+        "--clone",
+        metavar="GIT_URL",
+        help="clone a Git repository into the projects folder",
+    )
+    parser.add_argument(
+        "--create",
+        metavar="NAME",
+        help="create and initialize a project in the projects folder",
+    )
+    parser.add_argument(
+        "--import",
+        dest="import_path",
+        type=Path,
+        metavar="FOLDER",
+        help="import an existing Git repository",
+    )
+    parser.add_argument(
+        "--import-method",
+        choices=("symlink", "move", "copy"),
+        default="symlink",
+        help="how to import an existing repository (default: symlink)",
+    )
+    parser.add_argument(
+        "--trash",
+        type=Path,
+        metavar="REPOSITORY",
+        help="move a direct-child project to the desktop Trash",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="allow moving a project with uncommitted changes to Trash",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    root = args.root.expanduser().resolve()
     try:
-        repositories = discover_repositories(args.root.expanduser().resolve())
-    except FileNotFoundError as error:
-        print(error, file=sys.stderr)
+        if not root.is_dir():
+            raise ProjectOperationError(f"Projects folder does not exist: {root}")
+        if args.clone:
+            print(clone_project(root, args.clone))
+            return 0
+        if args.create:
+            print(create_project(root, args.create))
+            return 0
+        if args.import_path:
+            print(import_project(root, args.import_path, args.import_method))
+            return 0
+        if args.trash:
+            trash_project(root, args.trash, args.allow_dirty)
+            return 0
+        repositories = discover_repositories(root)
+    except (FileNotFoundError, ProjectOperationError, OSError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", None) or str(error)
+        print(detail.strip(), file=sys.stderr)
         return 1
 
     projects = [inspect_repository(path) for path in repositories]
