@@ -11,8 +11,8 @@ Item {
 
     property var shell: null
     property var manifest: null
-    property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "")
-    property string helper: pluginDir + "/bin/omarchy-project-launcher"
+    property string pluginDir: root.manifest && root.manifest.__sourceDir ? String(root.manifest.__sourceDir) : Qt.resolvedUrl(".").toString().replace("file://", "")
+    property string helper: pluginDir.replace(/\/$/, "") + "/bin/omarchy-project-launcher"
     property bool opened: false
     property bool loading: false
     property string errorText: ""
