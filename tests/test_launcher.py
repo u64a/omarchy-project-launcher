@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +40,9 @@ class LauncherTests(unittest.TestCase):
         )
 
         def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            self.assertIn("core.fsmonitor=false", command)
+            self.assertIn("core.hooksPath=/dev/null", command)
+            self.assertIn("--no-optional-locks", command)
             return subprocess.CompletedProcess(command, 0, output, "")
 
         project = inspect_repository(Path("/tmp/example"), runner)
@@ -49,6 +53,57 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(project.ahead, 2)
         self.assertEqual(project.behind, 1)
         self.assertEqual(project.status_text, "main • 1 changed • 1 untracked • ↑2 • ↓1")
+
+    def test_repository_fsmonitor_is_not_executed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            marker = repo / "fsmonitor-executed"
+            hook = repo / "fsmonitor.sh"
+            clean_env = {"PATH": os.environ["PATH"], "HOME": str(repo)}
+
+            subprocess.run(["git", "init", "--quiet", str(repo)], check=True, env=clean_env)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "Test"],
+                check=True,
+                env=clean_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "test@example.invalid"],
+                check=True,
+                env=clean_env,
+            )
+            (repo / "tracked.txt").write_text("tracked\n")
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "tracked.txt"],
+                check=True,
+                env=clean_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "--quiet", "-m", "initial"],
+                check=True,
+                env=clean_env,
+            )
+            hook.write_text(f'#!/bin/sh\nprintf executed > "{marker}"\nprintf "\\n"\n')
+            hook.chmod(0o755)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "core.fsmonitor", str(hook)],
+                check=True,
+                env=clean_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain=v2"],
+                check=True,
+                capture_output=True,
+                env=clean_env,
+            )
+            self.assertTrue(marker.exists(), "test repository did not execute its fsmonitor")
+            marker.unlink()
+
+            with patch.dict(os.environ, clean_env, clear=True):
+                project = inspect_repository(repo)
+
+            self.assertIsNone(project.error)
+            self.assertFalse(marker.exists())
 
     def test_menu_selection_maps_back_to_project(self) -> None:
         projects = [Project("alpha", Path("/tmp/alpha"), "main")]

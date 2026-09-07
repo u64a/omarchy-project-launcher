@@ -64,7 +64,20 @@ def discover_repositories(root: Path) -> list[Path]:
 def inspect_repository(path: Path, runner: CommandRunner = run_command) -> Project:
     try:
         result = runner(
-            ["git", "-C", str(path), "status", "--porcelain=v2", "--branch"]
+            [
+                "git",
+                "--no-pager",
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-C",
+                str(path),
+                "status",
+                "--porcelain=v2",
+                "--branch",
+            ]
         )
     except (OSError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", None) or str(error)

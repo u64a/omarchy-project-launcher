@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Prevent repository-controlled filesystem monitor hooks from executing during project discovery.
+- Disable Git hooks and optional index locking for read-only status scans.
+- Add a regression test covering a malicious repository-local `core.fsmonitor` configuration.
+
 ## 0.1.1
 
 - Fix marketplace-installed overlays failing to invoke the bundled launcher.
