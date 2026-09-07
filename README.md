@@ -35,15 +35,25 @@ For a convenient Omarchy menu entry, add this to `~/.config/omarchy/extensions/o
 },
 ```
 
+## Configuration
+
+By default, direct children of `~/Projects` are scanned each time the overlay opens. Set `OMARCHY_PROJECTS_ROOT` in the Omarchy shell environment to use another folder.
+
+The launcher deliberately does not maintain a project registry or cache: adding or removing a repository is reflected the next time it opens.
+
 ## Requirements
 
 - Omarchy Quattro with plugin support
-- Python 3
+- Python 3.10 or newer
 - Git
 - `xdg-terminal-exec`
 - GitHub Copilot CLI (`copilot`)
 
-The plugin runs with normal user permissions. It reads Git metadata and launches the configured terminal; it does not modify repositories.
+The plugin runs unsandboxed with normal user permissions, as all Omarchy plugins do. It reads directory entries and Git metadata and launches the configured terminal; it does not modify repositories or require elevated privileges. Review [SECURITY.md](SECURITY.md) for the security model and reporting process.
+
+## Marketplace readiness
+
+The repository contains the required manifest, QML entry point, license, documentation, tests, and CI workflow. Before publishing a release, run the Omarchy validator and QML linter on an Omarchy installation.
 
 ## Development
 

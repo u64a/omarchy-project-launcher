@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("manifest.json").read_text())
+          required = {"schemaVersion", "id", "name", "version", "author", "description", "kinds", "entryPoints"}
+          missing = required - manifest.keys()
+          assert not missing, f"Missing manifest fields: {sorted(missing)}"
+          assert manifest["entryPoints"]["overlay"] == "ProjectLauncher.qml"
+          assert Path(manifest["entryPoints"]["overlay"]).is_file()
+          PY
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Check helper
+        run: |
+          test -x bin/omarchy-project-launcher
+          python -m py_compile src/omarchy_project_launcher.py
