@@ -23,13 +23,15 @@ Install from the GitHub repository with Omarchy's plugin manager:
 omarchy plugin add https://github.com/u64a/omarchy-project-launcher.git --enable
 ```
 
-The plugin can be summoned with:
+Open the launcher with:
 
 ```bash
 omarchy-shell shell summon io.github.u64a.project-launcher '{}'
 ```
 
-Remove it with:
+Start typing to filter by project name, branch, or status. Use **Up/Down** to select a repository and **Enter** to open a new GitHub Copilot CLI session in its working directory.
+
+Remove the plugin with:
 
 ```bash
 omarchy plugin remove io.github.u64a.project-launcher
@@ -46,13 +48,23 @@ For a convenient Omarchy menu entry, add this to `~/.config/omarchy/extensions/o
 },
 ```
 
+## Manage projects
+
+Select **+ Add** to:
+
+- **Clone URL** — clone an HTTPS or SSH Git URL without recursively cloning submodules.
+- **Create new** — create a folder and initialize a Git repository on `main`.
+- **Import folder** — symlink (recommended), move, or copy an existing Git repository into the projects folder.
+
+Each project row includes a **Trash** action. Projects are moved to the desktop Trash, never permanently deleted. Repositories with uncommitted changes require an additional confirmation, and imported symlinks are trashed without touching their external targets.
+
+All controls are keyboard accessible. Press **Escape** to return to the project list or close the launcher.
+
 ## Configuration
 
 By default, direct children of `~/Projects` are scanned each time the overlay opens. Set `OMARCHY_PROJECTS_ROOT` in the Omarchy shell environment to use another folder.
 
 The launcher deliberately does not maintain a project registry or cache: adding or removing a repository is reflected the next time it opens.
-
-Use **+ Add** to clone, create, or import a project. Each project row has a **Trash** action. Trash removal is limited to direct children of the configured projects folder and never uses permanent deletion. Imported symlinks are themselves moved to Trash; their external targets are left untouched.
 
 ## Requirements
 
