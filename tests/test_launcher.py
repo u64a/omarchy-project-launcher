@@ -75,7 +75,9 @@ class LauncherTests(unittest.TestCase):
             self.assertIn("core.fsmonitor=false", command)
             self.assertIn("core.hooksPath=/dev/null", command)
             self.assertIn("--no-optional-locks", command)
-            return subprocess.CompletedProcess(command, 0, output, "")
+            if "status" in command:
+                self.assertIn("--ignore-submodules=all", command)
+            return subprocess.CompletedProcess(command, 0, output if "status" in command else "", "")
 
         project = inspect_repository(Path("/tmp/example"), runner)
 
@@ -149,9 +151,16 @@ class LauncherTests(unittest.TestCase):
             destination = clone_project(root, "https://github.com/acme/example.git", runner)
 
             self.assertEqual(destination, root / "example")
-            self.assertEqual(commands[0][-2:], ["https://github.com/acme/example.git", str(destination)])
+            self.assertEqual(commands[0][-2], "https://github.com/acme/example.git")
+            self.assertEqual(Path(commands[0][-1]).parent.parent, root)
+            self.assertTrue(Path(commands[0][-1]).parent.name.startswith(".launcher-stage-"))
+            self.assertEqual(list(root.iterdir()), [destination])
             self.assertIn("core.hooksPath=/dev/null", commands[0])
             self.assertIn("--no-recurse-submodules", commands[0])
+            self.assertIn("--no-checkout", commands[0])
+            self.assertIn("--no-local", commands[0])
+            checkout = next(command for command in commands if "checkout" in command)
+            self.assertIn("--no-recurse-submodules", checkout)
 
     def test_create_initializes_main_branch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -443,7 +452,7 @@ class SettingsTests(unittest.TestCase):
             save_settings(LauncherSettings("terminal"))
             helper = Path(__file__).resolve().parents[1] / "bin" / "omarchy-project-launcher"
             result = subprocess.run(
-                [str(helper), "--root", str(self.config), "--launch", str(project)],
+                [str(helper), "--supervise", "--root", str(self.config), "--launch", str(project)],
                 capture_output=True, text=True, timeout=5,
             )
         self.assertEqual(result.returncode, 0, result.stderr)

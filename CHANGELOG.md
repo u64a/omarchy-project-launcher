@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1
+
+- Address the marketplace resource-exhaustion report and additional Git execution paths identified during follow-up review.
+- Prevent inspection-time fetching and external transports, including repository-controlled protocol overrides; preserve explicit clone and terminal environments.
+- Refuse partial/promisor repositories and command-bearing remote import settings.
+- Close nested-submodule status/import bypasses by rejecting indexed gitlinks before scanning/importing and checking cloned trees before checkout. Known submodules report unverified status and require extra Trash confirmation.
+- Close configuration-include/worktree bypasses by refusing local includes, worktree configuration, and Git-directory/config symlink indirections before inspection/import and in copied staging checks.
+- Bound concurrent command output before decoding, impose command/helper deadlines and Git memory limits, and terminate/reap command groups on timeout, overflow, or cancellation.
+- Fail closed on unsuccessful Git configuration inspection; cap repository enumeration, parsed records, settings input, errors, and aggregate JSON instead of trusting partial scans.
+- Replace unbounded QML collectors with capped immediate streaming, watchdogs, and broker/worker cancellation that preserves detached terminals, including during shell teardown.
+- Stage clone/copy/create operations, enforce incremental import quotas, monitor clone storage with strict per-file limits, and publish without replacing existing destinations.
+- Limit move imports to atomic same-filesystem renames; preserve symlink and safe Trash behavior.
+- Document fixed resource policies, clone monitoring limitations, large-project handling, and cancellation/cleanup; add small-fixture process, filesystem, and live QML regressions.
+
 ## 0.3.0
 
 - Add a Setup screen to choose Copilot (the default), Claude Code, Codex CLI, a plain terminal, or a custom command.

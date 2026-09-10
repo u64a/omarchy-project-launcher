@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import Quickshell
-import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
@@ -48,20 +47,24 @@ Item {
     }
 
     function close() {
+        cancelWork();
         root.opened = false;
     }
 
     function dismiss() {
+        cancelWork();
         root.opened = false;
         if (root.shell && typeof root.shell.hide === "function")
             root.shell.hide((root.manifest && root.manifest.id) || "io.github.u64a.project-launcher");
     }
 
     function loadProjects() {
+        if (listProc.active)
+            return;
         root.loading = true;
         root.errorText = "";
-        listProc.command = [helper, "--json"];
-        listProc.running = true;
+        root.projects = [];
+        listProc.start([helper, "--json"]);
     }
 
     function filteredProjects() {
@@ -85,12 +88,13 @@ Item {
     }
 
     function showSetup() {
+        if (settingsProc.active)
+            return;
         root.operationError = "";
         root.viewMode = "setup";
         root.settingsLoading = true;
         root.launcherOptions = [];
-        settingsProc.command = [helper, "--settings"];
-        settingsProc.running = true;
+        settingsProc.start([helper, "--settings"]);
     }
 
     function saveSetup() {
@@ -153,13 +157,24 @@ Item {
     }
 
     function runOperation(command) {
+        if (operationProc.active)
+            return;
         root.operating = true;
         root.operationError = "";
-        operationProc.command = command;
-        operationProc.running = true;
+        operationProc.start(command);
+    }
+
+    function cancelWork() {
+        listProc.cancel("Operation cancelled");
+        settingsProc.cancel("Operation cancelled");
+        operationProc.cancel("Operation cancelled");
     }
 
     function returnToList() {
+        if (root.operating || root.settingsLoading) {
+            root.cancelWork();
+            return;
+        }
         root.viewMode = "list";
         root.operationError = "";
         loadProjects();
@@ -170,50 +185,50 @@ Item {
 
     Shortcut {
         sequence: "Escape"
-        enabled: root.opened && !root.operating && !root.settingsLoading
+        enabled: root.opened
         onActivated: {
-            if (root.viewMode === "list")
+            if (root.operating || root.settingsLoading || root.loading)
+                root.cancelWork();
+            else if (root.viewMode === "list")
                 root.dismiss();
             else
                 root.returnToList();
         }
     }
 
-    Process {
+    BoundedProcess {
         id: listProc
-        stdout: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
+        onFinished: function (exitCode) {
+            root.loading = false;
+            root.errorText = failure || errors.trim();
+            if (exitCode === 0 && !root.errorText) {
                 try {
-                    root.projects = JSON.parse(String(text || "[]"));
+                    var rows = JSON.parse(output);
+                    if (!Array.isArray(rows) || rows.length > 256)
+                        throw new Error("Project count limit");
+                    root.projects = rows;
                 } catch (error) {
                     root.projects = [];
                     root.errorText = "Could not read project status";
                 }
+            } else {
+                root.projects = [];
+                root.errorText = root.errorText || "Could not scan the projects folder";
             }
-        }
-        stderr: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                var detail = String(text || "").trim();
-                if (detail)
-                    root.errorText = detail;
-            }
-        }
-        onExited: function (exitCode) {
-            root.loading = false;
-            if (exitCode !== 0 && !root.errorText)
-                root.errorText = "Could not scan the projects folder";
         }
     }
 
-    Process {
+    BoundedProcess {
         id: settingsProc
-        stdout: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
+        timeoutMs: 50000
+        onFinished: function (exitCode) {
+            root.settingsLoading = false;
+            root.operationError = failure || errors.trim();
+            if (exitCode === 0 && !root.operationError) {
                 try {
-                    var settings = JSON.parse(String(text));
+                    var settings = JSON.parse(output);
+                    if (!Array.isArray(settings.options) || settings.options.length > 5)
+                        throw new Error("Launcher count limit");
                     root.launcherOptions = settings.options;
                     root.launcherChoice = settings.launcher;
                     root.customCommand = settings.custom_command;
@@ -221,20 +236,8 @@ Item {
                 } catch (error) {
                     root.operationError = "Could not read launcher settings";
                 }
-            }
-        }
-        stderr: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                var detail = String(text || "").trim();
-                if (detail)
-                    root.operationError = detail;
-            }
-        }
-        onExited: function (exitCode) {
-            root.settingsLoading = false;
-            if (exitCode !== 0 && !root.operationError)
-                root.operationError = "Could not load launcher settings";
+            } else
+                root.operationError = root.operationError || "Could not load launcher settings";
             Qt.callLater(function () {
                 if (root.viewMode !== "setup")
                     return;
@@ -250,25 +253,18 @@ Item {
         }
     }
 
-    Process {
+    BoundedProcess {
         id: operationProc
-        stdout: StdioCollector {
-            waitForEnd: true
-        }
-        stderr: StdioCollector {
-            waitForEnd: true
-            onStreamFinished: {
-                root.operationError = String(text || "").trim();
-            }
-        }
-        onExited: function (exitCode) {
+        timeoutMs: 320000
+        onFinished: function (exitCode) {
             root.operating = false;
+            root.operationError = failure || errors.trim();
             var wasLaunching = root.launching;
             root.launching = false;
             if (exitCode === 0) {
                 if (wasLaunching)
                     root.dismiss();
-                else
+                else if (root.opened)
                     root.returnToList();
             }
             else if (!root.operationError)
@@ -344,6 +340,7 @@ Item {
 
                     TextField {
                         id: search
+                        maximumLength: 256
                         enabled: !root.operating
                         visible: root.viewMode === "list"
                         activeFocusOnTab: true
@@ -476,7 +473,6 @@ Item {
                                     id: setupCancel
                                     focusable: true
                                     text: "Cancel"
-                                    enabled: !root.operating && !root.settingsLoading
                                     onClicked: root.returnToList()
                                 }
                             }
@@ -675,7 +671,6 @@ Item {
                             Button {
                                 activeFocusOnTab: true
                                 text: "Cancel"
-                                enabled: !root.operating
                                 onClicked: root.returnToList()
                             }
                         }
@@ -727,7 +722,6 @@ Item {
                             Button {
                                 activeFocusOnTab: true
                                 text: "Cancel"
-                                enabled: !root.operating
                                 onClicked: root.returnToList()
                             }
                         }
