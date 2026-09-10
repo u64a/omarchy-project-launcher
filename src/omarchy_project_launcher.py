@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Display Git repositories in the Omarchy menu and launch Copilot."""
+"""Display Git repositories in the Omarchy menu and open a chosen launcher."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -365,16 +367,131 @@ def project_json(project: Project) -> dict[str, object]:
     }
 
 
-def launch_copilot(project: Project) -> None:
-    subprocess.Popen(
-        [
-            "xdg-terminal-exec",
-            f"--dir={project.path}",
-            "copilot",
-            "-C",
-            str(project.path),
+LAUNCHERS = {
+    "copilot": ("GitHub Copilot CLI", "copilot"),
+    "claude": ("Claude Code", "claude"),
+    "codex": ("Codex CLI", "codex"),
+    "terminal": ("Plain terminal", ""),
+    "custom": ("Custom command", ""),
+}
+
+
+@dataclass(frozen=True)
+class LauncherSettings:
+    launcher: str = "copilot"
+    custom_command: str = ""
+
+
+def settings_path() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(config_home) / "omarchy-project-launcher" / "settings.json"
+
+
+def validate_settings(settings: LauncherSettings) -> list[str]:
+    if settings.launcher not in LAUNCHERS:
+        raise ProjectOperationError("Unknown launcher; choose one in Setup")
+    if "\0" in settings.custom_command:
+        raise ProjectOperationError("Custom command must not contain null characters")
+    if settings.launcher != "custom":
+        executable = LAUNCHERS[settings.launcher][1]
+        return [executable] if executable else []
+    try:
+        command = shlex.split(settings.custom_command)
+    except ValueError as error:
+        raise ProjectOperationError(f"Invalid custom command: {error}") from error
+    if not command or not command[0]:
+        raise ProjectOperationError("Enter a custom command")
+    command[0] = os.path.expanduser(command[0])
+    if "/" in command[0] and not Path(command[0]).is_absolute():
+        raise ProjectOperationError("Use an absolute executable path or a command on PATH")
+    return command
+
+
+def load_settings() -> LauncherSettings:
+    path = settings_path()
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return LauncherSettings()
+    except (OSError, ValueError) as error:
+        raise ProjectOperationError(f"Cannot read launcher settings: {error}") from error
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("launcher"), str)
+        or not isinstance(data.get("custom_command", ""), str)
+    ):
+        raise ProjectOperationError("Invalid launcher settings; choose a launcher in Setup")
+    settings = LauncherSettings(data["launcher"], data.get("custom_command", ""))
+    validate_settings(settings)
+    return settings
+
+
+def require_launcher(settings: LauncherSettings) -> list[str]:
+    command = validate_settings(settings)
+    for executable in ["xdg-terminal-exec", *command[:1]]:
+        if shutil.which(executable) is None:
+            raise ProjectOperationError(
+                f"Command not found: {executable}. Install it or choose another launcher in Setup."
+            )
+    return command
+
+
+def save_settings(settings: LauncherSettings) -> None:
+    require_launcher(settings)
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(
+                {"launcher": settings.launcher, "custom_command": settings.custom_command},
+                stream,
+            )
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def settings_json() -> dict[str, object]:
+    terminal_available = shutil.which("xdg-terminal-exec") is not None
+    result: dict[str, object] = {
+        "options": [
+            {
+                "id": key,
+                "name": name,
+                "available": terminal_available and (not executable or shutil.which(executable) is not None),
+            }
+            for key, (name, executable) in LAUNCHERS.items()
         ],
+        "launcher": "",
+        "custom_command": "",
+        "error": "",
+    }
+    try:
+        settings = load_settings()
+    except ProjectOperationError as error:
+        result["error"] = str(error)
+    else:
+        result.update(launcher=settings.launcher, custom_command=settings.custom_command)
+    return result
+
+
+def launch_project(project: Project) -> None:
+    settings = load_settings()
+    command = require_launcher(settings)
+    if settings.launcher == "copilot":
+        command.extend(["-C", str(project.path)])
+    # The terminal must not keep the overlay helper's output collectors open.
+    subprocess.Popen(
+        ["xdg-terminal-exec", f"--dir={project.path}", *command],
+        cwd=project.path,
         start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -400,8 +517,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--launch",
         type=Path,
         metavar="REPOSITORY",
-        help="launch Copilot in a repository without opening the menu",
+        help="open the configured launcher in a repository without opening the menu",
     )
+    parser.add_argument("--settings", action="store_true", help="show launcher settings and availability as JSON")
+    parser.add_argument("--set-launcher", choices=LAUNCHERS, help="save the preferred launcher")
+    parser.add_argument("--custom-command", default="", help="executable and arguments for the custom launcher")
     parser.add_argument(
         "--clone",
         metavar="GIT_URL",
@@ -439,8 +559,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.settings:
+        print(json.dumps(settings_json()))
+        return 0
+    if args.set_launcher:
+        save_settings(LauncherSettings(args.set_launcher, args.custom_command))
+        return 0
     root = args.root.expanduser().resolve()
     try:
         if not root.is_dir():
@@ -474,7 +600,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if selected.error:
             print(f"Cannot open {selected.name}: {selected.error}", file=sys.stderr)
             return 1
-        launch_copilot(selected)
+        launch_project(selected)
         return 0
 
     if args.list:
@@ -493,8 +619,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Cannot open {selected.name}: {selected.error}", file=sys.stderr)
         return 1
 
-    launch_copilot(selected)
+    launch_project(selected)
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except (ProjectOperationError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

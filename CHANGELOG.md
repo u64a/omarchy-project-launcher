@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Add a Setup screen to choose Copilot (the default), Claude Code, Codex CLI, a plain terminal, or a custom command.
+- Persist the launcher preference in the user's XDG configuration directory.
+- Mark unavailable launchers and surface missing-command and settings errors in the overlay.
+- Refresh the project-list preview and document Setup with a dedicated screenshot.
+- Document plugin updates and the shell restart needed if the old interface remains cached.
+
 ## 0.2.1
 
 - Refuse to run status scans in a repository whose local Git config defines a content filter, closing an arbitrary command execution path triggered by opening the launcher.

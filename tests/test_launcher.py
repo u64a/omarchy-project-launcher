@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import io
+import json
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +14,7 @@ from unittest.mock import patch
 from src.omarchy_project_launcher import (
     Project,
     ProjectOperationError,
+    LauncherSettings,
     choose_project,
     clone_project,
     create_project,
@@ -17,10 +22,15 @@ from src.omarchy_project_launcher import (
     executable_config_keys,
     import_project,
     inspect_repository,
-    launch_copilot,
+    launch_project,
+    load_settings,
+    main,
     managed_project_path,
     project_json,
     run_command,
+    save_settings,
+    settings_json,
+    settings_path,
     trash_project,
 )
 
@@ -276,11 +286,13 @@ class LauncherTests(unittest.TestCase):
 
         self.assertEqual(choose_project(projects, runner), projects[0])
 
+    @patch("src.omarchy_project_launcher.load_settings", return_value=LauncherSettings())
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
     @patch("src.omarchy_project_launcher.subprocess.Popen")
-    def test_launches_copilot_in_project_directory(self, popen) -> None:
+    def test_launches_copilot_in_project_directory(self, popen, which, settings) -> None:
         project = Project("alpha", Path("/tmp/alpha"), "main")
 
-        launch_copilot(project)
+        launch_project(project)
 
         popen.assert_called_once_with(
             [
@@ -290,8 +302,159 @@ class LauncherTests(unittest.TestCase):
                 "-C",
                 "/tmp/alpha",
             ],
+            cwd=project.path,
             start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+
+
+class SettingsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.config = Path(directory.name)
+        env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_default_does_not_create_settings(self) -> None:
+        self.assertEqual(load_settings(), LauncherSettings())
+        self.assertFalse(settings_path().exists())
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
+    def test_choices_persist_across_reads(self, which) -> None:
+        for launcher in ("copilot", "claude", "codex", "terminal", "custom"):
+            with self.subTest(launcher=launcher):
+                settings = LauncherSettings(launcher, 'my-tool --label "two words"')
+                save_settings(settings)
+                self.assertEqual(load_settings(), settings)
+                self.assertEqual(settings_path().stat().st_mode & 0o777, 0o600)
+                self.assertEqual(list(settings_path().parent.iterdir()), [settings_path()])
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
+    @patch("src.omarchy_project_launcher.subprocess.Popen")
+    def test_launch_commands_use_project_directory_without_shell(self, popen, which) -> None:
+        project = Project("spaced project", Path("/tmp/spaced project"), "main")
+        for launcher, custom, expected in [
+            ("claude", "", ["claude"]),
+            ("codex", "", ["codex"]),
+            ("terminal", "", []),
+            ("custom", 'my-tool --label "two words" "; echo nope" "$HOME"',
+             ["my-tool", "--label", "two words", "; echo nope", "$HOME"]),
+        ]:
+            with self.subTest(launcher=launcher):
+                save_settings(LauncherSettings(launcher, custom))
+                launch_project(project)
+                self.assertEqual(popen.call_args.args[0], [
+                    "xdg-terminal-exec", "--dir=/tmp/spaced project", *expected,
+                ])
+                self.assertEqual(popen.call_args.kwargs["cwd"], project.path)
+                self.assertTrue(popen.call_args.kwargs["start_new_session"])
+                self.assertNotIn("shell", popen.call_args.kwargs)
+
+    def test_invalid_settings_are_reported_and_can_be_replaced(self) -> None:
+        settings_path().parent.mkdir()
+        for data in ('{', '[]', '{"launcher": 1}', '{"launcher": "other"}',
+                     '{"launcher":"custom", "custom_command":2}'):
+            with self.subTest(data=data):
+                settings_path().write_text(data)
+                with self.assertRaises(ProjectOperationError):
+                    load_settings()
+                status = settings_json()
+                self.assertTrue(status["error"])
+                self.assertEqual(status["launcher"], "")
+                self.assertEqual(len(status["options"]), 5)
+        with patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool"):
+            save_settings(LauncherSettings("terminal"))
+        self.assertEqual(load_settings().launcher, "terminal")
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
+    def test_invalid_custom_commands_do_not_overwrite_preference(self, which) -> None:
+        save_settings(LauncherSettings("terminal"))
+        for command in ("", "  ", '""', '"unclosed', "./from-repo", "bin/from-repo", "tool\0"):
+            with self.subTest(command=command):
+                with self.assertRaises(ProjectOperationError):
+                    save_settings(LauncherSettings("custom", command))
+                self.assertEqual(load_settings().launcher, "terminal")
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value=None)
+    @patch("src.omarchy_project_launcher.subprocess.Popen")
+    def test_missing_command_blocks_launch_and_save(self, popen, which) -> None:
+        with self.assertRaisesRegex(ProjectOperationError, "Command not found"):
+            save_settings(LauncherSettings("copilot"))
+        with self.assertRaisesRegex(ProjectOperationError, "Command not found"):
+            launch_project(Project("alpha", Path("/tmp/alpha"), "main"))
+        self.assertFalse(settings_path().exists())
+        popen.assert_not_called()
+
+    def test_availability_detects_missing_ai_without_blocking_terminal(self) -> None:
+        with patch("src.omarchy_project_launcher.shutil.which",
+                   side_effect=lambda name: "/usr/bin/terminal" if name == "xdg-terminal-exec" else None):
+            options = settings_json()["options"]
+            self.assertEqual([option["available"] for option in options], [False, False, False, True, True])
+            with self.assertRaisesRegex(ProjectOperationError, "copilot"):
+                save_settings(LauncherSettings())
+            save_settings(LauncherSettings("terminal"))
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
+    def test_settings_cli_does_not_require_projects_folder(self, which) -> None:
+        missing = str(self.config / "missing")
+        self.assertEqual(main(["--root", missing, "--set-launcher", "custom",
+                               "--custom-command", 'tool "two words"']), 0)
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(main(["--root", missing, "--settings"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["launcher"], "custom")
+
+    def test_cli_surfaces_save_errors(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO) as error:
+            self.assertEqual(main(["--set-launcher", "custom", "--custom-command", '"']), 1)
+        self.assertIn("Invalid custom command", error.getvalue())
+
+    @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
+    def test_failed_atomic_save_preserves_settings_and_cleans_temporary_file(self, which) -> None:
+        save_settings(LauncherSettings("terminal"))
+        with patch.object(Path, "replace", side_effect=OSError("write failed")):
+            with self.assertRaisesRegex(OSError, "write failed"):
+                save_settings(LauncherSettings("claude"))
+        self.assertEqual(load_settings().launcher, "terminal")
+        self.assertEqual(list(settings_path().parent.iterdir()), [settings_path()])
+
+    def test_detached_terminal_outlives_helper_without_holding_output_pipes(self) -> None:
+        project = self.config / "spaced project"
+        project.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(project)], check=True)
+        binary = self.config / "bin"
+        binary.mkdir()
+        terminal = binary / "xdg-terminal-exec"
+        marker = self.config / "launched.json"
+        terminal.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys, time\n"
+            "from pathlib import Path\n"
+            "time.sleep(0.2)\n"
+            f"Path({str(marker)!r}).write_text(json.dumps({{"
+            "'argv': sys.argv[1:], 'cwd': os.getcwd(), 'detached': os.getsid(0) == os.getpid()"
+            "}))\n"
+        )
+        terminal.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": f"{binary}:{os.environ['PATH']}"}):
+            save_settings(LauncherSettings("terminal"))
+            helper = Path(__file__).resolve().parents[1] / "bin" / "omarchy-project-launcher"
+            result = subprocess.run(
+                [str(helper), "--root", str(self.config), "--launch", str(project)],
+                capture_output=True, text=True, timeout=5,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists())
+        launched = json.loads(marker.read_text())
+        self.assertEqual(launched["cwd"], str(project))
+        self.assertEqual(launched["argv"], [f"--dir={project}"])
+        self.assertTrue(launched["detached"])
 
 
 if __name__ == "__main__":

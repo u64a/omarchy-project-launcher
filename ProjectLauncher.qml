@@ -29,11 +29,17 @@ Item {
     property int deleteStep: 1
     property var projects: []
     property int selectedIndex: 0
+    property bool settingsLoading: false
+    property var launcherOptions: []
+    property string launcherChoice: "copilot"
+    property string customCommand: ""
+    property bool launching: false
 
     function open(payloadJson) {
         root.opened = true;
         root.filterText = "";
         root.viewMode = "list";
+        root.operationError = "";
         root.selectedIndex = 0;
         loadProjects();
         Qt.callLater(function () {
@@ -68,12 +74,30 @@ Item {
     }
 
     function launchSelected() {
+        if (root.operating)
+            return;
         var rows = filteredProjects();
         if (rows.length === 0)
             return;
         var project = rows[Math.max(0, Math.min(root.selectedIndex, rows.length - 1))];
-        Quickshell.execDetached([helper, "--launch", project.path]);
-        root.dismiss();
+        root.launching = true;
+        runOperation([helper, "--launch", project.path]);
+    }
+
+    function showSetup() {
+        root.operationError = "";
+        root.viewMode = "setup";
+        root.settingsLoading = true;
+        root.launcherOptions = [];
+        settingsProc.command = [helper, "--settings"];
+        settingsProc.running = true;
+    }
+
+    function saveSetup() {
+        var command = [helper, "--set-launcher", root.launcherChoice];
+        if (root.launcherChoice === "custom")
+            command.push("--custom-command", root.customCommand);
+        runOperation(command);
     }
 
     function showAdd(kind) {
@@ -146,7 +170,7 @@ Item {
 
     Shortcut {
         sequence: "Escape"
-        enabled: root.opened && !root.operating
+        enabled: root.opened && !root.operating && !root.settingsLoading
         onActivated: {
             if (root.viewMode === "list")
                 root.dismiss();
@@ -184,6 +208,49 @@ Item {
     }
 
     Process {
+        id: settingsProc
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                try {
+                    var settings = JSON.parse(String(text));
+                    root.launcherOptions = settings.options;
+                    root.launcherChoice = settings.launcher;
+                    root.customCommand = settings.custom_command;
+                    root.operationError = settings.error;
+                } catch (error) {
+                    root.operationError = "Could not read launcher settings";
+                }
+            }
+        }
+        stderr: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                var detail = String(text || "").trim();
+                if (detail)
+                    root.operationError = detail;
+            }
+        }
+        onExited: function (exitCode) {
+            root.settingsLoading = false;
+            if (exitCode !== 0 && !root.operationError)
+                root.operationError = "Could not load launcher settings";
+            Qt.callLater(function () {
+                if (root.viewMode !== "setup")
+                    return;
+                for (var i = 0; i < launcherRepeater.count; i++) {
+                    var option = launcherRepeater.itemAt(i);
+                    if (option && option.enabled) {
+                        option.forceActiveFocus();
+                        return;
+                    }
+                }
+                setupCancel.forceActiveFocus();
+            });
+        }
+    }
+
+    Process {
         id: operationProc
         stdout: StdioCollector {
             waitForEnd: true
@@ -196,10 +263,16 @@ Item {
         }
         onExited: function (exitCode) {
             root.operating = false;
-            if (exitCode === 0)
-                root.returnToList();
+            var wasLaunching = root.launching;
+            root.launching = false;
+            if (exitCode === 0) {
+                if (wasLaunching)
+                    root.dismiss();
+                else
+                    root.returnToList();
+            }
             else if (!root.operationError)
-                root.operationError = "Project operation failed";
+                root.operationError = wasLaunching ? "Could not open the launcher" : "Project operation failed";
         }
     }
 
@@ -241,9 +314,9 @@ Item {
                         spacing: Style.space(10)
 
                         Text {
-                            width: parent.width - addButton.width - parent.spacing
+                            width: root.viewMode === "list" ? parent.width - addButton.width - setupButton.width - parent.spacing * 2 : parent.width
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.viewMode === "list" ? "Projects" : root.viewMode === "add" ? "Add project" : "Move project to Trash"
+                            text: root.viewMode === "list" ? "Projects" : root.viewMode === "setup" ? "Launcher setup" : root.viewMode === "add" ? "Add project" : "Move project to Trash"
                             color: Color.menu.text
                             font.family: Style.font.family
                             font.pixelSize: Style.font.title
@@ -253,14 +326,25 @@ Item {
                         Button {
                             id: addButton
                             visible: root.viewMode === "list"
-                            activeFocusOnTab: true
+                            focusable: true
+                            enabled: !root.operating
                             text: "+ Add"
                             onClicked: root.showAdd("clone")
+                        }
+
+                        Button {
+                            id: setupButton
+                            visible: root.viewMode === "list"
+                            focusable: true
+                            enabled: !root.operating
+                            text: "Setup"
+                            onClicked: root.showSetup()
                         }
                     }
 
                     TextField {
                         id: search
+                        enabled: !root.operating
                         visible: root.viewMode === "list"
                         activeFocusOnTab: true
                         width: parent.width
@@ -286,6 +370,116 @@ Item {
                             var count = root.filteredProjects().length;
                             if (count > 0)
                                 root.selectedIndex = (root.selectedIndex - 1 + count) % count;
+                        }
+                    }
+
+                    Text {
+                        visible: root.viewMode === "list" && root.operationError !== ""
+                        width: parent.width
+                        text: root.operationError
+                        color: "#ef4444"
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.body
+                        wrapMode: Text.WordWrap
+                    }
+
+                    ScrollView {
+                        id: setupScroll
+                        visible: root.viewMode === "setup"
+                        width: parent.width
+                        height: parent.height - y
+                        contentWidth: availableWidth
+                        clip: true
+
+                        Column {
+                            width: setupScroll.availableWidth
+                            spacing: Style.space(8)
+
+                            Text {
+                                width: parent.width
+                                text: root.settingsLoading ? "Loading launchers..." : "Choose what opens in a project's working directory."
+                                color: Color.menu.text
+                                font.family: Style.font.family
+                                font.pixelSize: Style.font.body
+                                wrapMode: Text.WordWrap
+                            }
+
+                            FocusScope {
+                                id: setupChoices
+                                width: parent.width
+                                height: choicesColumn.implicitHeight
+
+                                Column {
+                                    id: choicesColumn
+                                    width: parent.width
+                                    spacing: Style.space(4)
+
+                                    Repeater {
+                                        id: launcherRepeater
+                                        model: root.launcherOptions
+                                        Button {
+                                            required property var modelData
+                                            required property int index
+                                            width: choicesColumn.width
+                                            focusable: true
+                                            focus: index === 0
+                                            enabled: !root.operating && modelData.available
+                                            selected: root.launcherChoice === modelData.id
+                                            leftAlign: true
+                                            opacity: enabled ? 1 : 0.5
+                                            text: (root.launcherChoice === modelData.id ? "● " : "") + modelData.name + (modelData.available ? "" : " (not installed)")
+                                            onClicked: root.launcherChoice = modelData.id
+                                        }
+                                    }
+                                }
+                            }
+
+                            TextField {
+                                visible: root.launcherChoice === "custom"
+                                width: parent.width
+                                enabled: !root.operating
+                                activeFocusOnTab: true
+                                placeholderText: "my-launcher --option \"quoted argument\""
+                                text: root.customCommand
+                                onTextChanged: root.customCommand = text
+                            }
+
+                            Text {
+                                visible: root.launcherChoice === "custom"
+                                width: parent.width
+                                text: "Enter an executable and arguments. Quoting is supported; shell operators and variable expansion are not. Use an absolute path for executables outside PATH."
+                                color: Color.menu.text
+                                font.family: Style.font.family
+                                font.pixelSize: Style.font.caption
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Text {
+                                visible: root.operationError !== ""
+                                width: parent.width
+                                text: root.operationError
+                                color: "#ef4444"
+                                font.family: Style.font.family
+                                font.pixelSize: Style.font.body
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Row {
+                                spacing: Style.space(8)
+                                Button {
+                                    focusable: true
+                                    text: root.operating ? "Saving..." : "Save"
+                                    enabled: !root.operating && !root.settingsLoading && root.launcherChoice !== "" && (root.launcherChoice !== "custom" || root.customCommand.trim() !== "")
+                                    onClicked: root.saveSetup()
+                                }
+                                Button {
+                                    id: setupCancel
+                                    focusable: true
+                                    text: "Cancel"
+                                    enabled: !root.operating && !root.settingsLoading
+                                    onClicked: root.returnToList()
+                                }
+                            }
                         }
                     }
 
@@ -541,6 +735,7 @@ Item {
 
                     ListView {
                         id: projectList
+                        enabled: !root.operating
                         visible: root.viewMode === "list"
                         width: parent.width
                         height: parent.height - y
