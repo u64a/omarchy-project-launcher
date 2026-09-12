@@ -116,7 +116,9 @@ Select **Setup** beside **+ Add**, choose a launcher, and press **Save**. Copilo
 | Plain terminal | No AI CLI required |
 | Custom command | Your executable and arguments |
 
-Unavailable launchers are marked **not installed**. Commands must be available in the Omarchy shell's `PATH`, or use an absolute executable path for a custom command. Nothing is installed automatically.
+Unavailable launchers are marked **not installed**. Commands must be available in an absolute directory from the Omarchy shell's `PATH`, or use an absolute executable path for a custom command. Relative and empty `PATH` entries are ignored. Nothing is installed automatically.
+
+The helper pins its Python interpreter and system dependencies to absolute paths and starts from a minimal allowlisted environment. Your selected launcher is resolved to an absolute executable before the helper enters the repository; the original absolute-only launcher search path is restored only inside that explicitly selected program.
 
 Every launcher starts in the selected repository's working directory. Custom commands support quoted arguments (for example, `my-tool --profile "work projects"`), but are not interpreted by a shell: pipes, redirects, environment-variable expansion, and command substitution are not supported. A leading `~` in the executable path is expanded.
 

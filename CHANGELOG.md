@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Pin the wrapper interpreter and system dependencies (`git`, `gio`, menu selection, terminal dispatch, and environment restoration) to absolute system paths.
+- Start QML helpers with a minimal allowlisted environment and an isolated Python interpreter, preventing ambient loader, Python, shell-startup, and Git variables from altering reviewed helper execution.
+- Resolve the intentionally selected built-in or custom launcher to an absolute executable before entering an untrusted repository; ignore relative and empty `PATH` entries.
+- Restore the user's absolute-only launcher search path only inside the explicitly selected launcher or login shell, preserving normal CLI toolchains without exposing helper dependency lookup.
+- Add regressions for ambient wrapper substitution, repository-local launcher substitution, fixed dependency paths, and the closed QML helper environment.
+
 ## 0.3.1
 
 - Address the marketplace resource-exhaustion report and additional Git execution paths identified during follow-up review.

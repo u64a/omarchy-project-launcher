@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import io
+import pwd
 import json
 import subprocess
 import sys
@@ -12,6 +13,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.omarchy_project_launcher import (
+    ENV_EXECUTABLE,
+    GIO_EXECUTABLE,
+    MENU_EXECUTABLE,
+    TERMINAL_EXECUTABLE,
+    USER_PATH_ENV,
     Project,
     ProjectOperationError,
     LauncherSettings,
@@ -23,6 +29,7 @@ from src.omarchy_project_launcher import (
     import_project,
     inspect_repository,
     launch_project,
+    launcher_search_path,
     load_settings,
     main,
     managed_project_path,
@@ -139,6 +146,23 @@ class LauncherTests(unittest.TestCase):
             self.assertIsNone(project.error)
             self.assertFalse(marker.exists())
 
+    def test_repository_inspection_ignores_ambient_git(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "repo"
+            project.mkdir()
+            self.initialize_repository(project)
+            hostile = root / "path"
+            hostile.mkdir()
+            marker = root / "ambient-git-ran"
+            fake_git = hostile / "git"
+            fake_git.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n")
+            fake_git.chmod(0o700)
+            with patch.dict(os.environ, {"PATH": f"{hostile}:{os.environ['PATH']}"}):
+                inspected = inspect_repository(project)
+            self.assertIsNone(inspected.error)
+            self.assertFalse(marker.exists())
+
     def test_clone_uses_safe_destination_and_disables_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -216,7 +240,7 @@ class LauncherTests(unittest.TestCase):
             commands: list[list[str]] = []
 
             def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-                if command[0] == "gio":
+                if command[0] == GIO_EXECUTABLE:
                     commands.append(command)
                     return subprocess.CompletedProcess(command, 0, "", "")
                 return run_command(command)
@@ -226,7 +250,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(commands, [])
 
             trash_project(root, project, allow_dirty=True, runner=runner)
-            self.assertEqual(commands, [["gio", "trash", "--", str(project)]])
+            self.assertEqual(commands, [[GIO_EXECUTABLE, "trash", "--", str(project)]])
 
     def test_scan_refuses_repository_with_content_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -275,7 +299,7 @@ class LauncherTests(unittest.TestCase):
             commands: list[list[str]] = []
 
             def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-                if command[0] == "gio":
+                if command[0] == GIO_EXECUTABLE:
                     commands.append(command)
                     return subprocess.CompletedProcess(command, 0, "", "")
                 return run_command(command)
@@ -284,30 +308,33 @@ class LauncherTests(unittest.TestCase):
                 trash_project(root, project, runner=runner)
 
             trash_project(root, project, allow_dirty=True, runner=runner)
-            self.assertEqual(commands, [["gio", "trash", "--", str(project)]])
+            self.assertEqual(commands, [[GIO_EXECUTABLE, "trash", "--", str(project)]])
 
     def test_menu_selection_maps_back_to_project(self) -> None:
         projects = [Project("alpha", Path("/tmp/alpha"), "main")]
 
         def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-            self.assertEqual(command[0], "omarchy-menu-select")
+            self.assertEqual(command[0], MENU_EXECUTABLE)
             return subprocess.CompletedProcess(command, 0, "alpha\tmain • clean\n", "")
 
         self.assertEqual(choose_project(projects, runner), projects[0])
 
     @patch("src.omarchy_project_launcher.load_settings", return_value=LauncherSettings())
+    @patch("src.omarchy_project_launcher.system_executable", side_effect=lambda path: path)
     @patch("src.omarchy_project_launcher.shutil.which", return_value="/usr/bin/tool")
     @patch("src.omarchy_project_launcher.subprocess.Popen")
-    def test_launches_copilot_in_project_directory(self, popen, which, settings) -> None:
+    def test_launches_copilot_in_project_directory(self, popen, which, system, settings) -> None:
         project = Project("alpha", Path("/tmp/alpha"), "main")
 
         launch_project(project)
 
         popen.assert_called_once_with(
             [
-                "xdg-terminal-exec",
+                TERMINAL_EXECUTABLE,
                 "--dir=/tmp/alpha",
-                "copilot",
+                ENV_EXECUTABLE,
+                f"PATH={launcher_search_path()}",
+                "/usr/bin/tool",
                 "-C",
                 "/tmp/alpha",
             ],
@@ -327,6 +354,9 @@ class SettingsTests(unittest.TestCase):
         env = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
         env.start()
         self.addCleanup(env.stop)
+        system = patch("src.omarchy_project_launcher.system_executable", side_effect=lambda path: path)
+        system.start()
+        self.addCleanup(system.stop)
 
     def test_default_does_not_create_settings(self) -> None:
         self.assertEqual(load_settings(), LauncherSettings())
@@ -356,12 +386,52 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(launcher=launcher):
                 save_settings(LauncherSettings(launcher, custom))
                 launch_project(project)
+                resolved = (["/usr/bin/tool", *expected[1:]] if expected else
+                            [pwd.getpwuid(os.getuid()).pw_shell])
                 self.assertEqual(popen.call_args.args[0], [
-                    "xdg-terminal-exec", "--dir=/tmp/spaced project", *expected,
+                    TERMINAL_EXECUTABLE, "--dir=/tmp/spaced project",
+                    ENV_EXECUTABLE, f"PATH={launcher_search_path()}", *resolved,
                 ])
                 self.assertEqual(popen.call_args.kwargs["cwd"], project.path)
                 self.assertTrue(popen.call_args.kwargs["start_new_session"])
                 self.assertNotIn("shell", popen.call_args.kwargs)
+
+    @patch("src.omarchy_project_launcher.subprocess.Popen")
+    def test_relative_path_entries_cannot_replace_selected_launcher(self, popen) -> None:
+        project = self.config / "hostile"
+        project.mkdir()
+        (project / "copilot").write_text("#!/bin/sh\nexit 99\n")
+        (project / "copilot").chmod(0o700)
+        trusted = self.config / "commands"
+        trusted.mkdir()
+        launcher = trusted / "copilot"
+        launcher.write_text("#!/bin/sh\nexit 0\n")
+        launcher.chmod(0o700)
+        with patch.dict(os.environ, {USER_PATH_ENV: f".:{trusted}::"}):
+            save_settings(LauncherSettings("copilot"))
+            launch_project(Project("hostile", project, "main"))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], TERMINAL_EXECUTABLE)
+        self.assertEqual(command[2], ENV_EXECUTABLE)
+        self.assertEqual(command[4], str(launcher))
+        self.assertNotIn(str(project / "copilot"), command)
+
+    def test_wrapper_ignores_ambient_python_and_dirname(self) -> None:
+        hostile = self.config / "hostile-path"
+        hostile.mkdir()
+        marker = self.config / "executed"
+        for name in ("python", "dirname"):
+            executable = hostile / name
+            executable.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n")
+            executable.chmod(0o700)
+        helper = Path(__file__).resolve().parents[1] / "bin" / "omarchy-project-launcher"
+        environment = dict(os.environ, PATH=str(hostile), XDG_CONFIG_HOME=str(self.config))
+        result = subprocess.run(
+            [str(helper), "--settings"], env=environment,
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
 
     def test_invalid_settings_are_reported_and_can_be_replaced(self) -> None:
         settings_path().parent.mkdir()
@@ -400,7 +470,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_availability_detects_missing_ai_without_blocking_terminal(self) -> None:
         with patch("src.omarchy_project_launcher.shutil.which",
-                   side_effect=lambda name: "/usr/bin/terminal" if name == "xdg-terminal-exec" else None):
+                   side_effect=lambda name, **kwargs: None):
             options = settings_json()["options"]
             self.assertEqual([option["available"] for option in options], [False, False, False, True, True])
             with self.assertRaisesRegex(ProjectOperationError, "copilot"):
@@ -450,9 +520,15 @@ class SettingsTests(unittest.TestCase):
         terminal.chmod(0o700)
         with patch.dict(os.environ, {"PATH": f"{binary}:{os.environ['PATH']}"}):
             save_settings(LauncherSettings("terminal"))
-            helper = Path(__file__).resolve().parents[1] / "bin" / "omarchy-project-launcher"
+            script = (
+                "import sys; import src.omarchy_project_launcher as launcher; "
+                f"launcher.TERMINAL_EXECUTABLE={str(terminal)!r}; "
+                "raise SystemExit(launcher.main(sys.argv[1:]))"
+            )
             result = subprocess.run(
-                [str(helper), "--supervise", "--root", str(self.config), "--launch", str(project)],
+                [sys.executable, "-c", script, "--root", str(self.config),
+                 "--launch", str(project)],
+                cwd=Path(__file__).resolve().parents[1],
                 capture_output=True, text=True, timeout=5,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -462,7 +538,14 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(marker.exists())
         launched = json.loads(marker.read_text())
         self.assertEqual(launched["cwd"], str(project))
-        self.assertEqual(launched["argv"], [f"--dir={project}"])
+        expected_path = os.pathsep.join(
+            entry for entry in f"{binary}:{os.environ['PATH']}".split(os.pathsep)
+            if entry and Path(entry).is_absolute()
+        )
+        self.assertEqual(launched["argv"], [
+            f"--dir={project}", ENV_EXECUTABLE, f"PATH={expected_path}",
+            pwd.getpwuid(os.getuid()).pw_shell,
+        ])
         self.assertTrue(launched["detached"])
 
 

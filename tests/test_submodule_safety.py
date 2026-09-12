@@ -236,7 +236,7 @@ class SubmoduleSafetyTests(unittest.TestCase):
 
         def runner(command):
             self.assertNotIn("status", command)
-            if command[0] == "gio":
+            if command[0] == launcher.GIO_EXECUTABLE:
                 trashed.append(command)
                 return subprocess.CompletedProcess(command, 0, "", "")
             return launcher.run_command(command)
@@ -245,7 +245,7 @@ class SubmoduleSafetyTests(unittest.TestCase):
             launcher.trash_project(self.root, project, runner=runner)
         self.assertEqual(trashed, [])
         launcher.trash_project(self.root, project, allow_dirty=True, runner=runner)
-        self.assertEqual(trashed, [["gio", "trash", "--", str(project)]])
+        self.assertEqual(trashed, [[launcher.GIO_EXECUTABLE, "trash", "--", str(project)]])
         self.assertTrue(self.source.exists())
         self.assertFalse(self.marker.exists())
 

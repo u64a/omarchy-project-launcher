@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python -I
 """Display Git repositories in the Omarchy menu and open a chosen launcher."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ import ctypes
 import errno
 import json
 import os
+import pwd
 import resource
 import selectors
 import shlex
@@ -55,6 +56,13 @@ GIT_MEMORY_BYTES = 512 * 1024 * 1024
 POLL_SECONDS = 0.1
 TERM_SECONDS = 0.3
 REAP_SECONDS = 0.7
+
+GIT_EXECUTABLE = "/usr/bin/git"
+GIO_EXECUTABLE = "/usr/bin/gio"
+MENU_EXECUTABLE = "/usr/bin/omarchy-menu-select"
+TERMINAL_EXECUTABLE = "/usr/bin/xdg-terminal-exec"
+ENV_EXECUTABLE = "/usr/bin/env"
+USER_PATH_ENV = "OMARCHY_PROJECT_LAUNCHER_USER_PATH"
 
 
 def error_detail(error: BaseException) -> str:
@@ -129,7 +137,7 @@ def _cleanup_group(process: subprocess.Popen, grace: float = TERM_SECONDS) -> No
 
 
 def command_seconds(command: Sequence[str]) -> float:
-    if command[0] == "omarchy-menu-select":
+    if Path(command[0]).name == "omarchy-menu-select":
         return 120
     if "clone" in command or "checkout" in command:
         return IMPORT_SECONDS
@@ -268,7 +276,7 @@ GIT_HARDENING = (
     "core.hooksPath=/dev/null",
 )
 
-GIT_INSPECTION = ("git", *GIT_HARDENING, "-c", "protocol.allow=never")
+GIT_INSPECTION = (GIT_EXECUTABLE, *GIT_HARDENING, "-c", "protocol.allow=never")
 
 
 def inspection_command(path: Path, *arguments: str) -> list[str]:
@@ -663,7 +671,7 @@ def clone_project(
                 inventory_tree(stage, deadline)
 
         git([
-            "git", *GIT_HARDENING, "clone", "--no-local", "--no-checkout",
+            GIT_EXECUTABLE, *GIT_HARDENING, "clone", "--no-local", "--no-checkout",
             "--no-recurse-submodules", "--", source, str(checkout),
         ])
         unsafe = executable_config_keys(checkout, runner, strict=True)
@@ -693,7 +701,7 @@ def create_project(
         checkout.mkdir()
         runner(
             [
-                "git",
+                GIT_EXECUTABLE,
                 "-c",
                 "core.hooksPath=/dev/null",
                 "init",
@@ -776,7 +784,7 @@ def trash_project(
             )
         if project.changed or project.untracked:
             raise ProjectOperationError("Project has uncommitted changes; confirm dirty removal")
-    runner(["gio", "trash", "--", str(project_path)])
+    runner([GIO_EXECUTABLE, "trash", "--", str(project_path)])
 
 
 def menu_option(project: Project) -> str:
@@ -798,7 +806,7 @@ def choose_project(
     try:
         result = runner(
             [
-                "omarchy-menu-select",
+                MENU_EXECUTABLE,
                 "Projects",
                 *options,
                 "--",
@@ -893,14 +901,47 @@ def load_settings() -> LauncherSettings:
     return settings
 
 
-def require_launcher(settings: LauncherSettings) -> list[str]:
+def system_executable(path: str) -> str | None:
+    candidate = Path(path)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return path
+    return None
+
+
+def launcher_search_path() -> str:
+    inherited = os.environ.get(USER_PATH_ENV, os.environ.get("PATH", ""))
+    return os.pathsep.join(
+        entry for entry in inherited.split(os.pathsep)
+        if entry and Path(entry).is_absolute()
+    )
+
+
+def resolve_launcher(executable: str) -> str | None:
+    if not executable:
+        return None
+    if Path(executable).is_absolute():
+        return shutil.which(executable)
+    resolved = shutil.which(executable, path=launcher_search_path())
+    if resolved is None or not Path(resolved).is_absolute():
+        return None
+    return resolved
+
+
+def require_launcher(settings: LauncherSettings) -> tuple[str, list[str]]:
+    terminal = system_executable(TERMINAL_EXECUTABLE)
+    if terminal is None:
+        raise ProjectOperationError(
+            f"Command not found: {TERMINAL_EXECUTABLE}. Install it or choose another launcher in Setup."
+        )
     command = validate_settings(settings)
-    for executable in ["xdg-terminal-exec", *command[:1]]:
-        if shutil.which(executable) is None:
+    if command:
+        resolved = resolve_launcher(command[0])
+        if resolved is None:
             raise ProjectOperationError(
-                f"Command not found: {executable}. Install it or choose another launcher in Setup."
+                f"Command not found: {command[0]}. Install it or choose another launcher in Setup."
             )
-    return command
+        command[0] = resolved
+    return terminal, command
 
 
 def save_settings(settings: LauncherSettings) -> None:
@@ -924,13 +965,13 @@ def save_settings(settings: LauncherSettings) -> None:
 
 
 def settings_json() -> dict[str, object]:
-    terminal_available = shutil.which("xdg-terminal-exec") is not None
+    terminal_available = system_executable(TERMINAL_EXECUTABLE) is not None
     result: dict[str, object] = {
         "options": [
             {
                 "id": key,
                 "name": name,
-                "available": terminal_available and (not executable or shutil.which(executable) is not None),
+                "available": terminal_available and (not executable or resolve_launcher(executable) is not None),
             }
             for key, (name, executable) in LAUNCHERS.items()
         ],
@@ -949,12 +990,22 @@ def settings_json() -> dict[str, object]:
 
 def launch_project(project: Project) -> None:
     settings = load_settings()
-    command = require_launcher(settings)
+    terminal, command = require_launcher(settings)
     if settings.launcher == "copilot":
         command.extend(["-C", str(project.path)])
+    if command:
+        launched = command
+    else:
+        shell = pwd.getpwuid(os.getuid()).pw_shell
+        if not shell or system_executable(shell) is None:
+            raise ProjectOperationError("Your login shell is not an executable absolute path")
+        launched = [shell]
+    # Resolve every executable before changing to the repository directory.
+    # Restore the user's PATH only inside their intentionally selected program.
+    launched = [ENV_EXECUTABLE, f"PATH={launcher_search_path()}", *launched]
     # The terminal must not keep the overlay helper's output collectors open.
     subprocess.Popen(
-        ["xdg-terminal-exec", f"--dir={project.path}", *command],
+        [terminal, f"--dir={project.path}", *launched],
         cwd=project.path,
         start_new_session=True,
         stdin=subprocess.DEVNULL,
@@ -1111,7 +1162,17 @@ def _cancel(signum, frame) -> None:
     raise OperationCancelled("Operation timed out" if signum == signal.SIGALRM else "Operation cancelled")
 
 
+def sanitize_environment() -> None:
+    os.environ.setdefault(USER_PATH_ENV, os.environ.get("PATH", ""))
+    os.environ["PATH"] = "/usr/bin"
+    for name in list(os.environ):
+        if name.startswith(("LD_", "PYTHON")) or name in {"BASH_ENV", "ENV", "CDPATH"}:
+            os.environ.pop(name, None)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    inherited_environment = dict(os.environ)
+    sanitize_environment()
     argv = list(sys.argv[1:] if argv is None else argv)
     previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM)}
     try:
@@ -1142,6 +1203,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         signal.setitimer(signal.ITIMER_REAL, 0)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+        os.environ.clear()
+        os.environ.update(inherited_environment)
 
 
 if __name__ == "__main__":

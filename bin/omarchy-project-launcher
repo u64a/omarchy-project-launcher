@@ -1,5 +1,12 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/python -I
 
-project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-exec python "$project_dir/src/omarchy_project_launcher.py" "$@"
+import os
+import runpy
+
+project_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+os.environ.setdefault("OMARCHY_PROJECT_LAUNCHER_USER_PATH", os.environ.get("PATH", ""))
+os.environ["PATH"] = "/usr/bin"
+runpy.run_path(
+    os.path.join(project_dir, "src", "omarchy_project_launcher.py"),
+    run_name="__main__",
+)

@@ -13,6 +13,26 @@ QtObject {
     readonly property int errorLimit: 8192
     signal finished(int exitCode)
 
+    function helperEnvironment() {
+        var environment = {
+            "PATH": "/usr/bin",
+            "OMARCHY_PROJECT_LAUNCHER_USER_PATH": Quickshell.env("PATH") || ""
+        };
+        var names = [
+            "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+            "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS",
+            "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP", "DESKTOP_SESSION", "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY", "WAYLAND_DISPLAY", "SSH_AUTH_SOCK", "OMARCHY_PROJECTS_ROOT"
+        ];
+        for (var index = 0; index < names.length; ++index) {
+            var value = Quickshell.env(names[index]);
+            if (value)
+                environment[names[index]] = value;
+        }
+        return environment;
+    }
+
     function start(command) {
         if (active)
             return false;
@@ -52,6 +72,8 @@ QtObject {
     }
 
     property Process child: Process {
+        clearEnvironment: true
+        environment: bounded.helperEnvironment()
         // An empty marker emits each read immediately: no unlimited partial
         // line buffer. The Python broker also bounds bytes before decoding.
         stdout: SplitParser {

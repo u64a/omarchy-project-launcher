@@ -307,7 +307,7 @@ class ResourceLimitTests(unittest.TestCase):
             "time.sleep(10)\n"
         )
         fake_git.chmod(0o700)
-        with patch.dict(os.environ, {"PATH": f"{self.base}:{os.environ['PATH']}"}):
+        with patch.object(launcher, "GIT_EXECUTABLE", str(fake_git)):
             for setting, value, message in (
                 ("IMPORT_ENTRIES", 2, "entry limit"),
                 ("IMPORT_SECONDS", 0.05, "time limit"),
@@ -328,7 +328,7 @@ class ResourceLimitTests(unittest.TestCase):
         fake_git.chmod(0o700)
         unrelated = self.root / "keep"
         unrelated.write_text("keep")
-        with patch.dict(os.environ, {"PATH": f"{self.base}:{os.environ['PATH']}"}):
+        with patch.object(launcher, "GIT_EXECUTABLE", str(fake_git)):
             with patch.object(launcher, "IMPORT_BYTES", 64):
                 with self.assertRaisesRegex(launcher.ProjectOperationError, "byte limit"):
                     launcher.clone_project(self.root, "https://example.invalid/repo.git")
@@ -365,14 +365,20 @@ class ResourceLimitTests(unittest.TestCase):
             "time.sleep(10)\n"
         )
         fake_git.chmod(0o700)
-        env = dict(os.environ, PATH=f"{self.base}:{os.environ['PATH']}")
+        helper = self.base / "launcher.py"
+        helper.write_text(
+            (ROOT / "src" / "omarchy_project_launcher.py").read_text().replace(
+                'GIT_EXECUTABLE = "/usr/bin/git"',
+                f"GIT_EXECUTABLE = {str(fake_git)!r}",
+            )
+        )
         for sig in (signal.SIGTERM, signal.SIGKILL):
             with self.subTest(signal=sig):
                 marker.unlink(missing_ok=True)
                 broker = subprocess.Popen(
-                    [sys.executable, str(ROOT / "src" / "omarchy_project_launcher.py"),
-                     "--supervise", "--root", str(self.root), "--clone", "https://example.invalid/repo.git"],
-                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    [sys.executable, str(helper), "--supervise", "--root", str(self.root),
+                     "--clone", "https://example.invalid/repo.git"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 )
                 try:
                     deadline = time.monotonic() + 3
@@ -408,6 +414,9 @@ class ResourceLimitTests(unittest.TestCase):
         self.assertEqual(collector.count('splitMarker: ""'), 2)
         self.assertIn("data.length > limit - previous.length", collector)
         self.assertIn('"--supervise"', collector)
+        self.assertIn("clearEnvironment: true", collector)
+        self.assertIn('"PATH": "/usr/bin"', collector)
+        self.assertIn('Quickshell.env("PATH")', collector)
         self.assertIn("bounded.child.signal(9)", collector)
         self.assertIn("child.signal(15)", collector)
         self.assertIn("watchdog.restart()", collector)
