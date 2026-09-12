@@ -27,6 +27,9 @@ class ResourceLimitTests(unittest.TestCase):
         self.base = Path(self.directory.name)
         self.root = self.base / "Projects"
         self.root.mkdir()
+        system = patch.object(launcher, "system_executable", side_effect=lambda path: path)
+        system.start()
+        self.addCleanup(system.stop)
 
     def repo(self, name="source"):
         path = self.base / name
