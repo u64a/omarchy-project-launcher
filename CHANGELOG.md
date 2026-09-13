@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Restore launcher availability detection and terminal launching by importing the Quickshell singleton used to read the shell environment.
+- Add a regression assertion so the required QML import cannot be removed unnoticed.
+
 ## 0.3.2
 
 - Pin the wrapper interpreter and system dependencies (`git`, `gio`, menu selection, terminal dispatch, and environment restoration) to absolute system paths.

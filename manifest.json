@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.u64a.project-launcher",
   "name": "Project Launcher",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "author": "u64a",
   "license": "MIT",
   "description": "Browse Git projects, inspect status, and open your preferred CLI or terminal in the selected repository.",

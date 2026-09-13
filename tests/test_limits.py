@@ -419,6 +419,7 @@ class ResourceLimitTests(unittest.TestCase):
         self.assertIn('"--supervise"', collector)
         self.assertIn("clearEnvironment: true", collector)
         self.assertIn('"PATH": "/usr/bin"', collector)
+        self.assertIn("import Quickshell\n", collector)
         self.assertIn('Quickshell.env("PATH")', collector)
         self.assertIn("bounded.child.signal(9)", collector)
         self.assertIn("child.signal(15)", collector)
